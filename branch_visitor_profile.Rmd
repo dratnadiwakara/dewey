@@ -1,0 +1,274 @@
+---
+title: "Branch Visitor Profile"
+date: "07/21/2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    theme: united
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+div.main-container {
+  max-width: 100%;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+```
+
+
+```{r}
+rm(list=ls())
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(lfe)
+library(stargazer)
+
+data_path = 'C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/'
+```
+
+
+```{r}
+poi_sod <- fread(paste0(data_path,"poi_sod.csv.gz"))
+poi_sod <- poi_sod[,c("CERT","UNINUMBR","NAMEFULL","usps_address","full_address_poi","LOCATION_NAME","PLACEKEY")]
+poi_sod <- poi_sod[usps_address != ""]
+poi_sod <- poi_sod[substr(tolower(NAMEFULL),1,2)==substr(tolower(LOCATION_NAME),1,2)]
+poi_sod <- poi_sod[!duplicated(poi_sod[,c("PLACEKEY")])]
+poi_sod <- poi_sod[!grepl(" ATM", LOCATION_NAME)]
+poi_sod_s <- poi_sod[,c("UNINUMBR","PLACEKEY")]
+poi_sod_s <- poi_sod_s[!duplicated(poi_sod_s$UNINUMBR)]
+```
+
+```{r}
+visits_summary <- fread(paste0(data_path,"place_month_visit_summary.csv.gz"))
+visits_summary <- visits_summary[PLACEKEY %in% poi_sod$PLACEKEY]
+visits_summary <- merge(visits_summary,poi_sod_s,by="PLACEKEY")
+```
+
+```{r}
+# monthly number of visits from a particular censustract to a given placekey together with censustract demographic characteristics
+visits_acs_merged <- fread(paste0(data_path,"visits_acs_merged.gz"))
+setkey(visits_acs_merged,PLACEKEY,DATE_RANGE_START)
+
+exclude_cols <- c("PLACEKEY", "DATE_RANGE_START","no_visits","censustract")
+
+place_visitor_wa <- visits_acs_merged[, lapply(.SD, weighted.mean, w = no_visits, na.rm = TRUE), by = .(PLACEKEY, DATE_RANGE_START), .SDcols = setdiff(names(visits_acs_merged), exclude_cols)]
+
+```
+
+
+```{r}
+place_visitor_wa <- place_visitor_wa[PLACEKEY %in% poi_sod$PLACEKEY]
+place_visitor_wa <- merge(place_visitor_wa,poi_sod_s,by="PLACEKEY")
+
+place_visitor_wa <- merge(place_visitor_wa,visits_summary[,c("PLACEKEY","DATE_RANGE_START","RAW_VISITOR_COUNTS")],by=c("PLACEKEY","DATE_RANGE_START"))
+
+exclude_cols <- c("PLACEKEY", "DATE_RANGE_START","RAW_VISITOR_COUNTS","UNINUMBR")
+
+avg_visitor <- place_visitor_wa[, lapply(.SD, weighted.mean, w = RAW_VISITOR_COUNTS, na.rm = TRUE),
+                                by = UNINUMBR, .SDcols = setdiff(names(place_visitor_wa), exclude_cols)]
+```
+
+
+```{r}
+g <- list()
+g[[1]] <- ggplot(avg_visitor,aes(x=median_age))+geom_histogram()
+g[[2]] <- ggplot(avg_visitor,aes(x=below_poverty_frac))+geom_histogram()
+g[[3]] <- ggplot(avg_visitor,aes(x=median_income_last_12_months))+geom_histogram()
+g[[4]] <- ggplot(avg_visitor,aes(x=internet_frac))+geom_histogram()
+g[[5]] <- ggplot(avg_visitor,aes(x=college_or_higher_frac))+geom_histogram()
+g[[6]] <- ggplot(avg_visitor,aes(x=owner_occ_frac))+geom_histogram()
+
+gridExtra::grid.arrange(g[[1]],g[[2]],g[[3]],g[[4]],g[[5]],g[[6]])
+```
+
+
+```{r}
+sod_2021 <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2022.csv",select = c("UNINUMBR","CERT","RSSDID","ASSET","DEPSUMBR","STCNTYBR","RSSDHCR","ZIPBR"))
+sod_2021[,DEPSUMBR:=str_remove_all(DEPSUMBR,",")]
+sod_2021[,DEPSUMBR:=as.numeric(DEPSUMBR)]
+sod_2021 <- sod_2021[DEPSUMBR>quantile(sod_2021$DEPSUMBR,0.05)]
+
+sod_2022 <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2023.csv",select = c("UNINUMBR","DEPSUMBR"))
+sod_2022[,DEPSUMBR:=str_remove_all(DEPSUMBR,",")]
+sod_2022[,DEPSUMBR:=as.numeric(DEPSUMBR)]
+setnames(sod_2022,"DEPSUMBR","DEPSUMBR22")
+
+
+sod_2022 <- merge(sod_2022,sod_2021,by="UNINUMBR")
+sod_2022[,dep_chg:=DEPSUMBR22/DEPSUMBR-1]
+sod_2022 <- sod_2022[dep_chg<quantile(sod_2022$dep_chg,0.99) & dep_chg>quantile(sod_2022$dep_chg,0.01)]
+```
+
+```{r}
+ggplot(sod_2022,aes(x=dep_chg))+geom_histogram()
+```
+
+
+```{r}
+sod_acs <- merge(sod_2022,avg_visitor,by="UNINUMBR")
+sod_acs[,dep_chg_bin:=ntile(dep_chg,10)]
+sod_acs[,ASSET:=str_remove_all(ASSET,",")]
+sod_acs[,ASSET:=as.numeric(ASSET)]
+```
+
+
+g[[1]] <- ggplot(avg_visitor,aes(x=median_age))+geom_histogram()
+g[[2]] <- ggplot(avg_visitor,aes(x=below_poverty_frac))+geom_histogram()
+g[[3]] <- ggplot(avg_visitor,aes(x=median_income_last_12_months))+geom_histogram()
+g[[4]] <- ggplot(avg_visitor,aes(x=internet_frac))+geom_histogram()
+g[[5]] <- ggplot(avg_visitor,aes(x=college_or_higher_frac))+geom_histogram()
+g[[6]] <- ggplot(avg_visitor,aes(x=owner_occ_frac))+geom_histogram()
+
+
+
+```{r}
+r <- list()
+r[[1]] <- felm(log(1+dep_chg)~log(median_age)|CERT,data=sod_acs)
+r[[2]] <- felm(log(1+dep_chg)~log(median_income_last_12_months)|CERT,data=sod_acs)
+r[[3]] <- felm(log(1+dep_chg)~internet_frac|CERT,data=sod_acs)
+r[[4]] <- felm(log(1+dep_chg)~college_or_higher_frac|CERT,data=sod_acs)
+r[[5]] <- felm(log(1+dep_chg)~owner_occ_frac|CERT,data=sod_acs)
+r[[6]] <- felm(log(1+dep_chg)~log(median_age)+log(median_income_last_12_months)+internet_frac+college_or_higher_frac+owner_occ_frac+owner_occ_frac|CERT,data=sod_acs)
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+
+r[[1]] <- felm(log(1+dep_chg)~log(median_age)+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[2]] <- felm(log(1+dep_chg)~log(median_income_last_12_months)+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[3]] <- felm(log(1+dep_chg)~internet_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[4]] <- felm(log(1+dep_chg)~college_or_higher_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[5]] <- felm(log(1+dep_chg)~owner_occ_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[6]] <- felm(log(1+dep_chg)~log(median_age)+log(median_income_last_12_months)+internet_frac+college_or_higher_frac+owner_occ_frac+owner_occ_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+
+r[[1]] <- felm(log(median_age)~log(ASSET)|STCNTYBR,data=sod_acs)
+r[[2]] <- felm(log(median_income_last_12_months)~log(ASSET)|STCNTYBR,data=sod_acs)
+r[[3]] <- felm(internet_frac~log(ASSET)|STCNTYBR,data=sod_acs)
+r[[4]] <- felm(college_or_higher_frac~log(ASSET)|STCNTYBR,data=sod_acs)
+r[[5]] <- felm(owner_occ_frac~log(ASSET)|STCNTYBR,data=sod_acs)
+
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+
+r[[1]] <- felm(log(median_age)~I(ASSET>1e6)|STCNTYBR,data=sod_acs[ASSET<1e7])
+r[[2]] <- felm(log(median_income_last_12_months)~I(ASSET>1e6)|STCNTYBR,data=sod_acs[ASSET<1e7])
+r[[3]] <- felm(internet_frac~I(ASSET>1e6)|STCNTYBR,data=sod_acs[ASSET<1e7])
+r[[4]] <- felm(college_or_higher_frac~I(ASSET>1e6)|STCNTYBR,data=sod_acs[ASSET<1e7])
+r[[5]] <- felm(owner_occ_frac~I(ASSET>1e6)|STCNTYBR,data=sod_acs[ASSET<1e7])
+
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+
+r[[1]] <- felm(log(median_age)~I(ASSET>1e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[2]] <- felm(log(median_income_last_12_months)~I(ASSET>1e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[3]] <- felm(internet_frac~I(ASSET>1e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[4]] <- felm(college_or_higher_frac~I(ASSET>1e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[5]] <- felm(owner_occ_frac~I(ASSET>1e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e6])
+
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+
+r[[1]] <- felm(log(median_age)~I(ASSET>5e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[2]] <- felm(log(median_income_last_12_months)~I(ASSET>5e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[3]] <- felm(internet_frac~I(ASSET>5e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[4]] <- felm(college_or_higher_frac~I(ASSET>5e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[5]] <- felm(owner_occ_frac~I(ASSET>5e7)|STCNTYBR|0|STCNTYBR,data=sod_acs[ASSET>1e7])
+
+stargazer(r,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+r[[1]] <- felm(I(ASSET>1e6)~wa_median_age|STCNTYBR,data=sod_acs)
+r[[2]] <- felm(I(ASSET>1e6)~wa_below_poverty_frac|STCNTYBR,data=sod_acs)
+r[[3]] <- felm(I(ASSET>1e6)~wa_internet_frac|STCNTYBR,data=sod_acs)
+r[[4]] <- felm(I(ASSET>1e6)~wa_spanish_speaking_frac|STCNTYBR,data=sod_acs)
+r[[5]] <- felm(I(ASSET>1e6)~wa_median_age+wa_below_poverty_frac+wa_internet_frac+wa_white_fraction|STCNTYBR,data=sod_acs)
+
+stargazer(r,type="text")
+```
+
+```{r}
+r <- list()
+r[[1]] <- felm(I(ASSET>1e7)~wa_median_age|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[2]] <- felm(I(ASSET>1e7)~wa_below_poverty_frac|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[3]] <- felm(I(ASSET>1e7)~wa_internet_frac|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[4]] <- felm(I(ASSET>1e7)~wa_spanish_speaking_frac|STCNTYBR,data=sod_acs[ASSET>1e6])
+r[[5]] <- felm(I(ASSET>1e7)~wa_median_age+wa_below_poverty_frac+wa_internet_frac+wa_white_fraction|STCNTYBR,data=sod_acs[ASSET>1e6])
+
+stargazer(r,type="text")
+```
+
+```{r}
+r <- list()
+r[[1]] <- felm(I(ASSET>25e7)~wa_median_age|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[2]] <- felm(I(ASSET>25e7)~wa_below_poverty_frac|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[3]] <- felm(I(ASSET>25e7)~wa_internet_frac|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[4]] <- felm(I(ASSET>25e7)~wa_spanish_speaking_frac|STCNTYBR,data=sod_acs[ASSET>1e7])
+r[[5]] <- felm(I(ASSET>25e7)~wa_median_age+wa_below_poverty_frac+wa_internet_frac+wa_white_fraction|STCNTYBR,data=sod_acs[ASSET>1e7])
+
+stargazer(r,type="text")
+```
+
+```{r}
+r <- list()
+r[[1]] <- felm(log(1+dep_chg)~wa_median_age+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[2]] <- felm(log(1+dep_chg)~wa_below_poverty_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[3]] <- felm(log(1+dep_chg)~wa_internet_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[4]] <- felm(log(1+dep_chg)~wa_spanish_speaking_frac+log(ASSET)|STCNTYBR,data=sod_acs)
+r[[5]] <- felm(log(1+dep_chg)~wa_median_age+wa_below_poverty_frac+wa_internet_frac+wa_white_fraction+log(ASSET)|STCNTYBR,data=sod_acs)
+
+stargazer(r,type="text")
+```
+
+
+```{r}
+library(GGally)
+
+Scatter_Matrix <- ggpairs(sod_acs,columns = c(9:22),title = "", axisLabels = "show")
+
+ggsave("scatter plot matrix.png", Scatter_Matrix, width = 7, height = 7, units = "in") 
+```
+
+
+```{r}
+ft_raw <- fread(paste0(data_path,"filtered_ft_data.csv.gz"))
+```
+
+
+r[[2]] <- felm(log(1+dep_chg)~wa_below_poverty_frac|STCNTYBR,data=sod_acs)

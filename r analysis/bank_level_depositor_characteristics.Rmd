@@ -1,0 +1,486 @@
+---
+title: "Bank-level depositor characteristics and deposit beta"
+date: "07/21/2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    theme: united
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+div.main-container {
+  max-width: 100%;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+```
+
+
+```{r}
+rm(list=ls())
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(lfe)
+library(stargazer)
+library(rgdal)
+library(rgeos)
+
+data_path = 'C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/'
+```
+
+
+```{r}
+poi_sod <- fread(paste0(data_path,"poi_sod_4.csv.gz"))
+poi_sod <- poi_sod[,c("CERT","UNINUMBR","NAMEFULL","usps_address","full_address_sod","LOCATION_NAME","PLACEKEY","match_type")]
+poi_sod[, NEW_PLACEKEY := gsub('-.*@', '@', PLACEKEY)]
+
+poi_sod <- poi_sod[!duplicated(poi_sod[,c("NEW_PLACEKEY","UNINUMBR")])]
+poi_sod <- poi_sod[!grepl("Western Union",LOCATION_NAME)]
+poi_sod <- poi_sod[!grepl("Payday",LOCATION_NAME)]
+
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+poi_sod[,atm:=ifelse(grepl(" ATM",LOCATION_NAME),1,0)]
+
+poi_sod <- poi_sod[no_branches==1 | atm==0]
+
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+
+poi_sod <- poi_sod[!(no_branches > 1 & tolower(substr(NAMEFULL, 1, 1)) != tolower(substr(LOCATION_NAME, 1, 1)))]
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+poi_sod[,bank:=ifelse(grepl(" bank",tolower(LOCATION_NAME)),1,0)]
+
+setorder(poi_sod,UNINUMBR,-bank)
+
+poi_sod <- poi_sod[!duplicated(poi_sod$UNINUMBR)]
+
+poi_sod <- poi_sod[,c("UNINUMBR","NEW_PLACEKEY","match_type")]
+
+# poi_sod <- poi_sod[usps_address != ""]
+```
+
+
+```{r}
+sod <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2022.csv",select = c("UNINUMBR","CERT","RSSDID","ASSET","DEPSUMBR","STCNTYBR","RSSDHCR","ZIPBR","SIMS_LATITUDE","SIMS_LONGITUDE"))
+sod[,DEPSUMBR:=str_remove_all(DEPSUMBR,",")]
+sod[,DEPSUMBR:=as.numeric(DEPSUMBR)]
+sod[,ASSET:=str_remove_all(ASSET,",")]
+sod[,ASSET:=as.numeric(ASSET)]
+sod[,statefips:=floor(STCNTYBR/1000)]
+sod[,statefips:=str_pad(statefips,2,"left","0")]
+```
+
+```{r}
+hhi <- sod[,.(deposits = sum(DEPSUMBR,na.rm=T)),by=.(RSSDID,statefips)]
+hhi[,total_deposits:=sum(deposits,na.rm = T),by=RSSDID]
+hhi[,deposit_share:=deposits/total_deposits]
+hhi[,deposit_share:=deposit_share*deposit_share]
+hhi <- hhi[,.(deposits_state_hhi=sum(deposit_share)),by=RSSDID]
+```
+
+
+```{r}
+sod <- merge(sod,poi_sod,by="UNINUMBR",all.x=T)
+sod[,match:=ifelse(is.na(NEW_PLACEKEY),0,1)]
+
+sod[,bank_size:=ifelse(ASSET<1e6,"1. Less than 1b",ifelse(ASSET<1e7,"2. 1 to 10b",ifelse(ASSET<5e7,"3. 10 to 50b",ifelse(ASSET<25e7,"4. 50 to 250b","5. More than 250b"))))]
+
+setorder(sod,bank_size)
+
+
+```
+
+
+
+
+```{r}
+
+acs_block_data_file <- "C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/acs_tract_data_2.csv.gz"
+
+asc_block_data <- fread(acs_block_data_file, header = TRUE)
+
+asc_block_data[, `:=`(
+  state = str_pad(state,width = 2,side = "left",pad = "0"),
+  county =str_pad(county,width = 3,side = "left",pad = "0"),
+  tract =str_pad(tract,width = 6,side = "left",pad = "0")
+)]
+
+# Replace negative values with NaN in specific columns
+cols_to_replace <- c(
+  "median_age",
+  "median_income_last_12_months",
+  "aggregate_family_income"
+)
+
+asc_block_data[, (cols_to_replace) := lapply(.SD, function(x) ifelse(x < 0, NA, x)), .SDcols = cols_to_replace]
+
+# Create the 'censustract' column
+asc_block_data[, censustract := paste0(state, county, tract)]
+
+# Calculate additional columns
+asc_block_data[, mean_family_income := aggregate_family_income / no_of_households]
+asc_block_data[, white_fraction := population_race_white / population_race_base]
+asc_block_data[, english_speaking_frac := households_language_english / households_language_base]
+asc_block_data[, spanish_speaking_frac := households_language_spanish / households_language_base]
+asc_block_data[, internet_frac := households_internet_yes / households_internet_base]
+asc_block_data[, computer_frac := households_computer_yes / households_computer_base]
+asc_block_data[, under_19_frac := population_by_age_base_under_19 / population_by_age_base]
+asc_block_data[, over_65_frac := population_by_age_base_65_older / population_by_age_base]
+asc_block_data[, below_poverty_frac := poverty_status_below / poverty_status_base]
+asc_block_data[, food_stamp_frac := received_food_stamps_snap_yes / received_food_stamps_snap_base]
+asc_block_data[, owner_occ_frac := housing_units_occupancy_own / housing_units_occupancy_base]
+asc_block_data[, home_with_mtg_frac := housing_units_with_a_mortgage / housing_units_mortgage_base]
+asc_block_data[, college_or_higher_frac := education_college_or_higher / education_base]
+asc_block_data[, less_than_high_school_frac := education_less_than_high_school / education_base]
+
+# Select desired columns
+selected_columns <- c(
+  'censustract',
+  'median_age',
+  'median_income_last_12_months',
+  'mean_family_income',
+  'white_fraction',
+  'travel_time_to_work',
+  'spanish_speaking_frac',
+  'english_speaking_frac',
+  'internet_frac',
+  'computer_frac',
+  'under_19_frac',
+  'over_65_frac',
+  'below_poverty_frac',
+  'food_stamp_frac',
+  'owner_occ_frac',
+  'college_or_higher_frac',
+  'less_than_high_school_frac'
+)
+
+acs <- asc_block_data[, ..selected_columns]
+
+new_acs = copy(acs)
+new_acs[,censustract:=paste0(substr(censustract,1,10),'0')]
+new_acs <- new_acs[, lapply(.SD, mean), by = censustract, .SDcols = -"censustract"]
+new_acs <- new_acs[!censustract %in% acs$censustract]
+
+acs <- rbind(acs,new_acs)
+acs[, (names(acs)) := lapply(.SD, function(x) replace(x, is.infinite(x), NA)), .SDcols = names(acs)]
+```
+
+
+
+```{r}
+visits_file = 'C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/cbgs_place_month_visits_count20210101_20221201.csv.gz'
+
+visits <- fread(visits_file)
+visits[,censustract:=substr(CBGS,1,11)]
+visits[,CBGS:=NULL]
+visits[, NEW_PLACEKEY := gsub('-[^@]+@', '@', PLACEKEY)]
+
+visits_sum <- visits[,.(no_visits=sum(no_visits,na.rm=T)),by=.(censustract,NEW_PLACEKEY,DATE_RANGE_START)]
+```
+
+```{r}
+visits_merged <- merge(visits_sum,acs,by="censustract")
+```
+
+```{r}
+exclude_cols <- c("NEW_PLACEKEY", "DATE_RANGE_START","no_visits","censustract")
+
+place_visitor_wa <- visits_merged[, lapply(.SD, weighted.mean, w = no_visits, na.rm = TRUE), by = .(NEW_PLACEKEY, DATE_RANGE_START), .SDcols = setdiff(names(visits_merged), exclude_cols)]
+
+place_visitor_wa <- place_visitor_wa[NEW_PLACEKEY %in% sod$NEW_PLACEKEY]
+place_visitor_wa <- merge(place_visitor_wa,sod,by="NEW_PLACEKEY")
+place_visitor_wa[,college_bin:=ntile(college_or_higher_frac,20)]
+place_visitor_wa[,income_bin:=ntile(mean_family_income,20)]
+```
+
+
+```{r}
+
+temp <- place_visitor_wa[,.(deposits = sum(DEPSUMBR,na.rm=T)),by=.(RSSDID,college_bin)]
+temp[,total_deposits:=sum(deposits,na.rm = T),by=RSSDID]
+temp[,deposit_share:=deposits/total_deposits]
+temp[,deposit_share:=deposit_share*deposit_share]
+temp <- temp[,.(deposits_college_hhi=sum(deposit_share)),by=RSSDID]
+
+hhi <- merge(hhi,temp,by="RSSDID",all.x=T)
+
+
+temp <- place_visitor_wa[,.(deposits = sum(DEPSUMBR,na.rm=T)),by=.(RSSDID,income_bin)]
+temp[,total_deposits:=sum(deposits,na.rm = T),by=RSSDID]
+temp[,deposit_share:=deposits/total_deposits]
+temp[,deposit_share:=deposit_share*deposit_share]
+temp <- temp[,.(deposits_income_hhi=sum(deposit_share)),by=RSSDID]
+
+hhi <- merge(hhi,temp,by="RSSDID",all.x=T)
+```
+
+
+
+```{r}
+visits_summary <- fread(paste0(data_path,"place_month_visit_summary20210101_20221201.csv.gz"))
+visits_summary[, NEW_PLACEKEY := gsub('-[^@]+@', '@', PLACEKEY)]
+visits_summary <- visits_summary[NEW_PLACEKEY %in% sod$NEW_PLACEKEY]
+
+visits_summary <- visits_summary[,.(RAW_VISIT_COUNTS=sum(RAW_VISIT_COUNTS,na.rm=T),
+                                    RAW_VISITOR_COUNTS = sum(RAW_VISITOR_COUNTS,na.rm=T),
+                                    DISTANCE_FROM_HOME = mean(DISTANCE_FROM_HOME,na.rm=T),
+                                    MEDIAN_DWELL = mean(MEDIAN_DWELL,na.rm=T),
+                                    android = sum(android,na.rm=T),
+                                    ios = sum(ios,na.rm=T)),
+                                 by=.(NEW_PLACEKEY,DATE_RANGE_START)]
+
+
+place_visitor_wa <- merge(place_visitor_wa,visits_summary,by=c("NEW_PLACEKEY","DATE_RANGE_START"))
+
+place_visitor_wa[,android_pct:=android/(ios+android+1)]
+place_visitor_wa[,deposits_per_visitor:=DEPSUMBR/(RAW_VISITOR_COUNTS+1)]
+```
+
+
+
+```{r}
+exclude_cols <- c("NEW_PLACEKEY", "DATE_RANGE_START","censustract","RSSDID","CERT","STCNTYBR","RSSDHCR","ZIPBR","SIMS_LATITUDE","SIMS_LONGITUDE","match_type","match","bank_size","statefips","RAW_VISIT_COUNTS","RAW_VISITOR_COUNTS","android","ios","UNINUMBR")
+
+bank_wa <-  place_visitor_wa[, lapply(.SD, weighted.mean, w = RAW_VISITOR_COUNTS, na.rm = TRUE), by = .(RSSDID, DATE_RANGE_START), .SDcols = setdiff(names(place_visitor_wa), exclude_cols)]
+
+bank_wa[,bank_size:=ifelse(ASSET<1e6,"1. Less than 1b",ifelse(ASSET<1e7,"2. 1 to 10b",ifelse(ASSET<5e7,"3. 10 to 50b",ifelse(ASSET<25e7,"4. 50 to 250b","5. More than 250b"))))]
+```
+
+
+
+# Persistance
+
+
+```{r}
+bank_wa[,DATE_RANGE_START:=as.Date(DATE_RANGE_START)]
+setorder(bank_wa,RSSDID,DATE_RANGE_START)
+```
+
+```{r}
+variables <- c( 'median_age',
+  'median_income_last_12_months',
+  'mean_family_income',
+  'white_fraction',
+  'travel_time_to_work',
+  'spanish_speaking_frac',
+  'english_speaking_frac',
+  'internet_frac',
+  'computer_frac',
+  'under_19_frac',
+  'over_65_frac',
+  'below_poverty_frac',
+  'food_stamp_frac',
+  'owner_occ_frac',
+  'college_or_higher_frac',
+  'less_than_high_school_frac',
+  'android_pct')
+
+for (var in variables) {
+  bank_wa[, paste0(var, "_lagged") := shift(get(var), n = 1, type = "lag"), by = RSSDID]
+  fe_model <- felm(reformulate(paste0(var, "_lagged"), response = var), data = bank_wa)
+  coefficient <- coef(fe_model)[paste0(var, "_lagged")]
+  cat("Coefficient for lagged", var, ":", coefficient, "\n")
+  coefficients <- c(coefficients, coefficient)
+}
+
+```
+
+
+```{r}
+depbeta <- fread("DSS_depositBeta.csv")
+depbeta[,assets_cpi:=str_remove_all(assets_cpi,",")]
+depbeta[,assets_cpi:=as.numeric(assets_cpi)]
+depbeta[,beta_z:=(expbeta-mean(depbeta$expbeta))/sd(depbeta$expbeta)]
+
+
+bank_wa_mean_data <- bank_wa[, lapply(.SD, mean, na.rm = TRUE), by = RSSDID, .SDcols = variables]
+bank_wa_mean_data[, paste0(variables, "_quartile") := lapply(.SD, ntile, 4), .SDcols = variables]
+
+
+bank_wa_mean_data <- merge(bank_wa_mean_data,depbeta,by.x="RSSDID",by.y="rssdid",all.x=T)
+
+sod_summary <- sod[,.(ASSET=mean(ASSET,na.rm=T)),by=RSSDID]
+
+sod_summary[,bank_size:=ifelse(ASSET<1e6,"1. Less than 1b",ifelse(ASSET<1e7,"2. 1 to 10b",ifelse(ASSET<5e7,"3. 10 to 50b",ifelse(ASSET<25e7,"4. 50 to 250b","5. More than 250b"))))]
+
+
+bank_wa_mean_data <- merge(bank_wa_mean_data,sod_summary,by="RSSDID",all.x=T)
+
+bank_wa_mean_data <- merge(bank_wa_mean_data,hhi,by="RSSDID",all.x=T)
+```
+
+
+
+
+```{r}
+round_values <- function(x) {
+  ifelse(x > 100, round(x, 0), ifelse(x > 10, round(x, 1), round(x, 2)))
+}
+```
+
+
+```{r}
+columns_to_include <- c('median_age','median_income_last_12_months','mean_family_income','white_fraction','spanish_speaking_frac','internet_frac','computer_frac','under_19_frac','over_65_frac','owner_occ_frac','college_or_higher_frac','android_pct','expbeta','deposits_state_hhi','deposits_college_hhi','deposits_income_hhi')
+
+result_table <- bank_wa_mean_data[!is.na(bank_size), lapply(.SD, function(x) list(Mean = mean(x, na.rm = TRUE))), by = bank_size, .SDcols = columns_to_include]
+
+setorder(result_table,bank_size)
+
+transposed_result_table <- t(result_table)
+
+colnames(transposed_result_table) <- unlist(transposed_result_table[1,])
+
+transposed_result_table <- transposed_result_table[-1,]
+
+transposed_result_table <- cbind(rownames(transposed_result_table), transposed_result_table)
+
+transposed_result_table <- as.data.table(transposed_result_table)
+
+transposed_result_table <- data.frame(lapply(transposed_result_table, function(x) unlist(x, use.names = FALSE)))
+
+transposed_result_table <- data.table(transposed_result_table)
+
+numeric_cols <- names(transposed_result_table)[sapply(transposed_result_table, is.numeric)]
+
+transposed_result_table[, (numeric_cols) := lapply(.SD, round_values), .SDcols = numeric_cols]
+
+print(transposed_result_table)
+```
+
+
+
+```{r}
+# regression_list <- list()
+# 
+# # Loop through each quartile variable
+# for (var in paste0(variables, "_quartile")) {
+#   formula <- reformulate(paste("factor(", var, ")|bank_size", sep = ""), response = "beta_z")
+#   
+#   # Perform the fixed-effects regression
+#   fe_model <- felm(formula, data = bank_wa_mean_data)
+#   
+#   # Append the regression to the list
+#   regression_list[[var]] <- fe_model
+# }
+# 
+# stargazer(regression_list,type="text",omit.stat = "ser")
+```
+
+
+```{r}
+r <- list()
+r[[1]] <- felm(beta_z~factor(median_age_quartile)|bank_size,data=bank_wa_mean_data)
+r[[2]] <- felm(beta_z~factor(mean_family_income_quartile)|bank_size,data=bank_wa_mean_data)
+r[[3]] <- felm(beta_z~factor(college_or_higher_frac_quartile)|bank_size,data=bank_wa_mean_data)
+r[[4]] <- felm(beta_z~factor(over_65_frac_quartile)|bank_size,data=bank_wa_mean_data)
+r[[5]] <- felm(beta_z~factor(owner_occ_frac_quartile)|bank_size,data=bank_wa_mean_data)
+r[[6]] <- felm(beta_z~deposits_state_hhi|bank_size,data=bank_wa_mean_data)
+# r[[7]] <- felm(beta_z~deposits_college_hhi|bank_size,data=bank_wa_mean_data,weights = bank_wa_mean_data$ASSET)
+# r[[8]] <- felm(beta_z~deposits_income_hhi|bank_size,data=bank_wa_mean_data,weights = bank_wa_mean_data$ASSET)
+ r[[7]] <- felm(beta_z~median_age+log(mean_family_income)+college_or_higher_frac+over_65_frac+over_65_frac+owner_occ_frac+android_pct+white_fraction|bank_size,data=bank_wa_mean_data)
+
+stargazer(r,type="text",no.space = T,omit.stat = "ser")
+```
+
+
+
+
+
+```{r}
+size_vector <- c('1. Less than 1b') #[1] "1. Less than 1b"   "2. 1 to 10b"       "4. 50 to 250b"     "3. 10 to 50b"   "5. More than 250b"
+# size_vector <- c('2. 1 to 10b','3. 10 to 50b','4. 50 to 250b','5. More than 250b')
+r <- list()
+r[[1]] <- felm(beta_z~factor(median_age_quartile)+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[2]] <- felm(beta_z~factor(mean_family_income_quartile)+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[3]] <- felm(beta_z~factor(college_or_higher_frac_quartile)+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[4]] <- felm(beta_z~factor(over_65_frac_quartile)+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[5]] <- felm(beta_z~factor(owner_occ_frac_quartile)+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[6]] <- felm(beta_z~deposits_state_hhi+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[7]] <- felm(beta_z~deposits_college_hhi+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[8]] <- felm(beta_z~deposits_income_hhi+log(ASSET)|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+# r[[7]] <- felm(beta_z~median_age+log(mean_family_income)+college_or_higher_frac+over_65_frac+over_65_frac+owner_occ_frac+android_pct+white_fraction|bank_size,data=bank_wa_mean_data)
+
+stargazer(r,type="text",no.space = T,omit.stat = "ser")
+```
+
+
+```{r}
+size_vector <- c('2. 1 to 10b') #[1] "1. Less than 1b"   "2. 1 to 10b"       "4. 50 to 250b"     "3. 10 to 50b"   "5. More than 250b"
+size_vector <- c('2. 1 to 10b','3. 10 to 50b','4. 50 to 250b','5. More than 250b')
+r <- list()
+r[[1]] <- felm(beta_z~factor(median_age_quartile)+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[2]] <- felm(beta_z~factor(mean_family_income_quartile)+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[3]] <- felm(beta_z~factor(college_or_higher_frac_quartile)+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[4]] <- felm(beta_z~factor(over_65_frac_quartile)+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[5]] <- felm(beta_z~factor(owner_occ_frac_quartile)+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[6]] <- felm(beta_z~deposits_state_hhi+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[7]] <- felm(beta_z~deposits_college_hhi+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+r[[8]] <- felm(beta_z~deposits_income_hhi+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
+# r[[7]] <- felm(beta_z~median_age+log(mean_family_income)+college_or_higher_frac+over_65_frac+over_65_frac+owner_occ_frac+android_pct+white_fraction|bank_size,data=bank_wa_mean_data)
+
+stargazer(r,type="text",no.space = T,omit.stat = "ser")
+```
+
+
+```{r}
+ggplot(bank_wa_mean_data, aes(x = expbeta, fill = factor(median_age_quartile))) +
+  geom_density(alpha = 0.5) +  # Density plot with transparency
+  labs(
+    x = "expbeta",
+    y = "Density",
+    title = "Density of expbeta by median_age_quartile"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(bank_wa_mean_data, aes(x = expbeta, fill = factor(mean_family_income_quartile))) +
+  geom_density(alpha = 0.5) +  # Density plot with transparency
+  labs(
+    x = "expbeta",
+    y = "Density",
+    title = "Density of expbeta by median_age_quartile"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+ggplot(bank_wa_mean_data, aes(x = expbeta, fill = factor(college_or_higher_frac_quartile))) +
+  geom_density(alpha = 0.5) +  # Density plot with transparency
+  labs(
+    x = "expbeta",
+    y = "Density",
+    title = "Density of expbeta by median_age_quartile"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+ggplot(bank_wa_mean_data, aes(x = expbeta, fill = factor(owner_occ_frac_quartile))) +
+  geom_density(alpha = 0.5) +  # Density plot with transparency
+  labs(
+    x = "expbeta",
+    y = "Density",
+    title = "Density of expbeta by median_age_quartile"
+  ) +
+  theme_minimal()
+```
+
+

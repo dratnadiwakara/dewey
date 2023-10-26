@@ -1,0 +1,320 @@
+---
+title: "Branch-level deposit beta"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    theme: united
+    number_sections: true
+    code_folding: hide
+---
+
+```{=html}
+<style type="text/css">
+.main-container {
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+div.main-container {
+  max-width: 100%;
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+```
+
+```{r include=FALSE}
+rm(list=ls())
+library(data.table)
+library(lfe)
+library(stargazer)
+library(ggplot2)
+library(fst)
+library(stringr)
+library(stringi)
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(gridExtra)
+library(reshape2)
+library(lubridate)
+# library(knitr)
+# library(kableExtra)
+# library(formattable)
+library(tidycensus)
+library(readxl)
+source('C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/functions.R')
+gc()
+```
+
+# Fedfunds rate
+```{r}
+ff <- fread("FEDFUNDS.csv")
+ff[,DATE:=as.Date(DATE)]
+ff <- ff[month(DATE) == 6]
+ff[,YEAR:=year(DATE)]
+ff[,c("DATE"):=NULL]
+setorder(ff,YEAR)
+
+ff[YEAR > min(YEAR), delta_ff := FEDFUNDS - shift(FEDFUNDS)]
+
+```
+
+
+# Ratewatch data
+Gets mean interest rate at RSSD, ZIP, YEAR level
+```{r}
+rw_inst <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/RateWatch/Deposit_InstitutionDetails.txt")
+rw_inst <- rw_inst[,c("ACCT_NBR","RSSD_ID","CERT_NBR","STATE_FPS","CNTY_FPS","ASSET_SZ","ZIP")]
+rw_inst[,fips:=paste0(str_pad(STATE_FPS,2,"left","0"),str_pad(CNTY_FPS,3,"left","0"))]
+rw_inst[,c("STATE_FPS","CNTY_FPS"):=list(NULL)]
+rw_inst[,ZIP:=substr(ZIP,1,5)]
+
+
+rw_summary <- readRDS("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/RateWatch/rate_watch_summary_12MCD10K_weekly.rds")
+rw_summary <- rw_summary[month(qtr) == 6]
+rw_summary[,YEAR:=year(qtr)]
+
+rw_summary <- merge(rw_summary,rw_inst,by.x="ACCOUNTNUMBER",by.y="ACCT_NBR")
+
+rw_summary <- rw_summary[,.(mean_apy=mean(mean_apy,na.rm=T),median_apy=median(median_apy,na.rm=T)),by=.(YEAR,RSSD_ID,fips)]
+```
+
+# SOD data
+```{r}
+sod <- list()
+i=1
+for(fl in list.files(path="C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data",full.names = T)){
+  sod[[i]] <- fread(fl,select = c("YEAR","CERT","DEPSUMBR","RSSDID","STCNTYBR","UNINUMBR","ASSET"))
+  i=i+1
+}
+
+sod <- rbindlist(sod,fill=T)
+
+sod[,DEPSUMBR:=str_remove_all(DEPSUMBR,",")]
+sod[,DEPSUMBR:= as.numeric(DEPSUMBR)]
+sod[,ASSET:=str_remove_all(ASSET,",")]
+sod[,ASSET:= as.numeric(ASSET)]
+sod[,fips:=str_pad(STCNTYBR,5,"left","0")]
+sod <- sod[,c("YEAR","CERT","DEPSUMBR","RSSDID","fips","UNINUMBR","ASSET")]
+
+sod <- sod[YEAR %in% 2010:2019]
+
+sod_rw <- merge(sod,rw_summary,by.x=c("YEAR","RSSDID","fips"),by.y=c("YEAR","RSSD_ID","fips"))#,all.x=T
+
+sod_rw[,interest_exp:=DEPSUMBR*mean_apy]
+
+setorder(sod_rw,UNINUMBR,YEAR)
+
+sod_rw[, DEPSUMBR_1 := shift(DEPSUMBR),by=UNINUMBR]
+sod_rw[, delta_int_exp := interest_exp - shift(interest_exp), by = UNINUMBR]
+sod_rw[, delta_int_rate := (mean_apy - shift(mean_apy))/mean_apy, by = UNINUMBR]
+sod_rw[, delta_int_exp := delta_int_exp/((DEPSUMBR+DEPSUMBR_1)/2)]
+sod_rw[, delta_deposit_amt := DEPSUMBR - shift(DEPSUMBR), by = UNINUMBR]
+sod_rw[, delta_deposit_amt := delta_deposit_amt/DEPSUMBR]
+sod_rw[, delta_yr := YEAR - shift(YEAR), by = UNINUMBR]
+
+```
+
+
+```{r}
+sod_rw_ff <- merge(sod_rw,ff,by="YEAR")
+sod_rw_ff[,bank_size:=ifelse(ASSET<1e6,"1. Less than 1b",ifelse(ASSET<1e7,"2. 1 to 10b",ifelse(ASSET<5e7,"3. 10 to 50b",ifelse(ASSET<25e7,"4. 50 to 250b","5. More than 250b"))))]
+sod_rw_ff <- sod_rw_ff[delta_yr==1 & !is.na(delta_deposit_amt)]
+sod_rw_ff[, no_obs := .N, by = UNINUMBR]
+sod_rw_ff <- sod_rw_ff[no_obs>=4]
+
+sod_rw_ff[, .(count = uniqueN(UNINUMBR)), by = bank_size]
+```
+
+
+# Branch Deposit Beta
+
+```{r}
+branch_list <- unique(sod_rw_ff$UNINUMBR)
+
+branch_list <- branch_list[!is.na(branch_list)]
+
+branch_list <- data.table(UNINUMBR=branch_list,
+                          int_exp_beta_ind_branch=NA_real_,
+                          deposit_flow_beta_ind_branch=NA_real_,
+                          deposit_flow_beta_bank_year_fe=NA_real_)
+
+```
+
+
+```{r}
+pb = txtProgressBar(min=1,max=nrow(branch_list),style = 3)
+i=1
+for(br in branch_list$UNINUMBR) {
+  setTxtProgressBar(pb,i)
+  i=i+1
+  temp <- sod_rw_ff[UNINUMBR==br & 
+                    delta_int_exp> quantile(sod_rw_ff$delta_int_exp,0.025,na.rm=T)  & 
+                    delta_int_exp< quantile(sod_rw_ff$delta_int_exp,0.975,na.rm=T)  ]
+  if(nrow(temp)<5) {
+    next
+  }
+  try({
+    r <- lm(delta_int_exp~delta_ff,data=temp)
+    branch_list[,int_exp_beta_ind_branch:=ifelse(UNINUMBR==br,r$coefficients['delta_ff'],int_exp_beta_ind_branch)]
+  })
+}
+```
+
+
+
+```{r}
+pb = txtProgressBar(min=1,max=nrow(branch_list),style = 3)
+i=1
+for(br in branch_list$UNINUMBR) {
+  setTxtProgressBar(pb,i)
+  i=i+1
+  temp <- sod_rw_ff[UNINUMBR==br & 
+                    delta_deposit_amt> quantile(sod_rw_ff$delta_deposit_amt,0.025,na.rm=T)  & 
+                    delta_deposit_amt< quantile(sod_rw_ff$delta_deposit_amt,0.975,na.rm=T)  & is.finite(delta_int_rate)]
+  if(nrow(temp)<5) {
+    next
+  }
+  try({
+    r <- lm(delta_deposit_amt~delta_ff+delta_int_rate,data=temp)
+    branch_list[,deposit_flow_beta_ind_branch:=ifelse(UNINUMBR==br,r$coefficients['delta_ff'],deposit_flow_beta_ind_branch)]
+  })
+}
+```
+
+
+
+```{r}
+
+bank_sizes <- unique(sod_rw_ff$bank_size)
+
+bank_sizes <- bank_sizes[bank_sizes == "1. Less than 1b"]
+
+for(bz in bank_sizes) {
+  
+  gc()
+  
+  print(bz)
+  
+  dt <- sod_rw_ff[bank_size==bz & !is.na(delta_deposit_amt) & is.finite(delta_deposit_amt)]
+
+  dt <- dt[!is.na(UNINUMBR) & !is.na(delta_ff) & !is.na(delta_deposit_amt)]
+  dt[,bank_year:=paste0(RSSDID,"_",YEAR)]
+  
+  dt <- dt[delta_deposit_amt> quantile(dt$delta_deposit_amt,0.025,na.rm=T)  & 
+                      delta_deposit_amt< quantile(dt$delta_deposit_amt,0.975,na.rm=T)]
+  
+  dt[, bank_year_delta_deposit_amt := sum(delta_deposit_amt * DEPSUMBR) / sum(DEPSUMBR), by = bank_year]
+  
+  
+  # dt[,bank_year_delta_deposit_amt:=mean(delta_deposit_amt,na.rm=T),by=bank_year]
+  
+  dt[,adjusted_delta_deposit_amt:=delta_deposit_amt-bank_year_delta_deposit_amt]
+  
+  
+  
+  dt[, no_obs := .N, by = UNINUMBR]
+  dt <- dt[no_obs>=5]
+  
+  temp <- dcast(dt, adjusted_delta_deposit_amt ~ UNINUMBR,value.var = "delta_ff",fun.aggregate = mean, fill = 0)
+
+  names(temp)[2:length(names(temp))] <- paste0("U_",names(temp)[2:length(names(temp))])
+  temp <- data.table(temp)
+  
+  
+  gc()
+  r <- lm(adjusted_delta_deposit_amt~.,data=temp)
+  gc()
+  
+  reg_results <- data.frame(r$coefficients)
+  reg_results['variable'] <- rownames(reg_results)
+  reg_results <- data.table(reg_results)
+  reg_results[,variable:=str_replace(variable,"U_","")]
+  reg_results[,variable:=as.integer(variable)]
+  reg_results <- reg_results[!is.na(variable)]
+  
+  for(i in 1:nrow(reg_results)) {
+    branch_list[,deposit_flow_beta_bank_year_fe:=ifelse(UNINUMBR==reg_results[i]$variable,
+                                                        reg_results[i]$r.coefficients,
+                                                        deposit_flow_beta_bank_year_fe)]
+  }
+  
+  rm(r)
+}
+
+
+```
+
+
+```{r}
+
+# reg_vars <- paste(paste0("U_",unique(dt$UNINUMBR)),collapse = "+")
+
+
+```
+
+
+
+```{r}
+ggplot(branch_list,aes(x=int_exp_beta_ind_branch,y=deposit_flow_beta_ind_branch))+geom_point()+geom_smooth(method="lm")
+```
+
+
+```{r}
+pattern <- '*:delta_ff$'
+i=1
+pb = txtProgressBar(min=1,max=length(unique(sod_rw_ff$RSSDID)),style = 3)
+for(bnk in unique(sod_rw_ff$RSSDID)) {
+    setTxtProgressBar(pb,i)
+  i=i+1
+  temp <- sod_rw_ff[RSSDID==bnk & delta_int_exp>  quantile(sod_rw_ff$delta_int_exp,0.05,na.rm=T)  & delta_int_exp< quantile(sod_rw_ff$delta_int_exp,0.95,na.rm=T)]
+  if(nrow(temp)<5) {
+    next
+  }
+  try({
+    Sys.time()
+    r <- felm(delta_int_exp~factor(UNINUMBR)*delta_ff|YEAR+UNINUMBR,data=temp)
+    Sys.time()
+    # r <- lm(delta_int_exp~factor(UNINUMBR)*delta_ff+factor(YEAR),data=temp)
+    df <- as.data.table(r$coefficients)
+    df[,names:=rownames(r$coefficients)]
+    names(df) <- c("values","names")
+    # df <- data.table(names = names(df), values = as.numeric(df))
+    df <- df[grep(pattern, names)]
+    df <- df[substr(names,1,16)=="factor(UNINUMBR)" & !is.na(values)]
+    df[,UNINUMBR:=str_replace(names,"factor\\(UNINUMBR\\)","")]
+    df[,UNINUMBR:=str_replace(UNINUMBR,":delta_ff","")]
+    df[,UNINUMBR:=as.numeric(UNINUMBR)]
+    df <- df[!is.na(UNINUMBR)]
+    for(i in 1:nrow(df)) {
+      branch_list[,int_exp_beta_bank_fe:=ifelse(UNINUMBR==df[i,]$UNINUMBR,df[i,]$values,int_exp_beta_bank_fe)]
+    }
+    
+  })
+}
+```
+
+```{r}
+ggplot(branch_list[!is.na(beta)],aes(x=beta))+geom_histogram()
+```
+```{r}
+df <- sod_rw_ff[,c("delta_int_exp","UNINUMBR","YEAR")]
+dummy_variables <- model.matrix(~ UNINUMBR - 1, data = df)
+your_data_with_dummies <- cbind(df, dummy_variables)
+
+
+```
+
+```{r}
+dummies <- dcast(sod_rw_ff, YEAR~UNINUMBR, fun.aggregate = length)
+setnames(dummies, gsub("^\\.", "UNINUMBR_", names(dummies)))
+
+```
+

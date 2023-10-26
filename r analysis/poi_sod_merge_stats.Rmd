@@ -1,0 +1,209 @@
+---
+title: "POI SOD Match Stats"
+date: "07/21/2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    theme: united
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+div.main-container {
+  max-width: 100%;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+```
+
+
+```{r}
+rm(list=ls())
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(lfe)
+library(stargazer)
+library(rgdal)
+library(rgeos)
+
+data_path = 'C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/'
+```
+
+
+```{r}
+poi_sod <- fread(paste0(data_path,"poi_sod_4.csv.gz"))
+poi_sod <- poi_sod[,c("CERT","UNINUMBR","NAMEFULL","usps_address","full_address_sod","LOCATION_NAME","PLACEKEY","match_type")]
+poi_sod[, NEW_PLACEKEY := gsub('-.*@', '@', PLACEKEY)]
+
+poi_sod <- poi_sod[!duplicated(poi_sod[,c("NEW_PLACEKEY","UNINUMBR")])]
+poi_sod <- poi_sod[!grepl("Western Union",LOCATION_NAME)]
+poi_sod <- poi_sod[!grepl("Payday",LOCATION_NAME)]
+
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+poi_sod[,atm:=ifelse(grepl(" ATM",LOCATION_NAME),1,0)]
+
+poi_sod <- poi_sod[no_branches==1 | atm==0]
+
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+
+poi_sod <- poi_sod[!(no_branches > 1 & tolower(substr(NAMEFULL, 1, 1)) != tolower(substr(LOCATION_NAME, 1, 1)))]
+poi_sod[,no_branches:=.N,by=UNINUMBR]
+poi_sod[,bank:=ifelse(grepl(" bank",tolower(LOCATION_NAME)),1,0)]
+
+setorder(poi_sod,UNINUMBR,-bank)
+
+poi_sod <- poi_sod[!duplicated(poi_sod$UNINUMBR)]
+
+poi_sod <- poi_sod[,c("UNINUMBR","NEW_PLACEKEY","match_type")]
+
+# poi_sod <- poi_sod[usps_address != ""]
+```
+
+
+```{r}
+sod <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2022.csv",select = c("UNINUMBR","CERT","RSSDID","ASSET","DEPSUMBR","STCNTYBR","RSSDHCR","ZIPBR","SIMS_LATITUDE","SIMS_LONGITUDE"))
+sod[,DEPSUMBR:=str_remove_all(DEPSUMBR,",")]
+sod[,DEPSUMBR:=as.numeric(DEPSUMBR)]
+sod[,ASSET:=str_remove_all(ASSET,",")]
+sod[,ASSET:=as.numeric(ASSET)]
+
+
+sod <- merge(sod,poi_sod,by="UNINUMBR",all.x=T)
+sod[,match:=ifelse(is.na(NEW_PLACEKEY),0,1)]
+
+sod[,bank_size:=ifelse(ASSET<1e6,"1. Less than 1b",ifelse(ASSET<1e7,"2. 1 to 10b",ifelse(ASSET<5e7,"3. 10 to 50b",ifelse(ASSET<25e7,"4. 50 to 250b","5. More than 250b"))))]
+
+setorder(sod,bank_size)
+
+sod[,statefips:=floor(STCNTYBR/1000)]
+sod[,statefips:=str_pad(statefips,2,"left","0")]
+```
+
+
+```{r}
+sod[,.(count = .N,
+       deposits=sum(DEPSUMBR),
+       N_percent = (.N / nrow(sod)) * 100,
+         deposits_percent = (sum(DEPSUMBR) / sum(sod$DEPSUMBR)) * 100),by=.(match)]
+```
+
+
+```{r}
+sod[match==1,
+    .(count = .N,
+      deposits=sum(DEPSUMBR),
+      N_percent = (.N / nrow(sod[match==1])) * 100,
+      deposits_percent = (sum(DEPSUMBR) / sum(sod[match==1]$DEPSUMBR)) * 100),
+    by=.(match_type)]
+```
+
+```{r}
+t <- sod[,
+          .(match_no_pct=mean(match),
+            deposits_t = sum(DEPSUMBR),
+            deposits_y = sum(DEPSUMBR[match == 1])
+            ),
+    by=.(bank_size)]
+
+t[,match_amt_pct:=deposits_y/deposits_t]
+t[,c("deposits_t","deposits_y"):=list(NULL)]
+
+print(t)
+```
+
+
+
+```{r}
+us_states <- readOGR("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Shapefiles/US States","cb_2014_us_state_20m")
+
+us_states <- fortify(us_states,region="GEOID")
+
+us_states <- data.table(us_states)
+us_states <- us_states[!id %in% c("02","15","72")]
+
+t <- sod[,.(match_no_pct=mean(match),
+            deposits_t = sum(DEPSUMBR),
+            deposits_y = sum(DEPSUMBR[match == 1])
+            ),
+         by=statefips]
+t[,match_amt_pct:=deposits_y/deposits_t]
+t[,c("deposits_t","deposits_y"):=list(NULL)]
+
+us_states <- merge(us_states,t,by.x="id",by.y="statefips")
+
+```
+
+
+
+```{r}
+ggplot()+
+  geom_polygon(data=us_states, aes(x=long,y=lat,group=group,fill=match_no_pct),color=NA)+
+ scale_fill_gradientn(colors=c("ivory1","honeydew1","darkseagreen3","darkturquoise","dodgerblue","dodgerblue4"))+
+  theme_minimal()+
+  theme(axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position = "bottom",panel.grid = element_blank())+ guides(fill=guide_legend(title="Match No Frac"))
+```
+
+
+
+```{r}
+ggplot()+
+  geom_polygon(data=us_states, aes(x=long,y=lat,group=group,fill=match_amt_pct),color=NA)+
+ scale_fill_gradientn(colors=c("ivory1","honeydew1","darkseagreen3","darkturquoise","dodgerblue","dodgerblue4"))+
+  theme_minimal()+
+  theme(axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position = "bottom",panel.grid = element_blank())+ guides(fill=guide_legend(title="Match Amt Frac"))
+```
+
+
+
+```{r}
+ggplot()+
+ geom_polygon(data=us_states, aes(x=long,y=lat,group=group),fill=NA,color='gray40')+
+  geom_point(data=sod[SIMS_LONGITUDE< -66.9 & SIMS_LONGITUDE> -124.74 & SIMS_LATITUDE> 24.52 & SIMS_LATITUDE < 49.4],aes(y=SIMS_LATITUDE,x=SIMS_LONGITUDE,color=factor(match)),size=0.7)+
+ scale_color_manual(
+    name = "",
+    values = c("1" = "seagreen", "0" = "indianred3"),
+    labels = c("1" = "Matched branch", "0" = "Unmatched branch")
+  ) +
+ # scale_fill_gradientn(colors=c("ivory1","honeydew1","darkseagreen3","darkturquoise","dodgerblue","dodgerblue4"))+
+  theme_minimal()+
+  theme(axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "bottom",
+    panel.grid = element_blank()
+  ) 
+```
+
+
+# Diagnosis
+
+
+```{r}
+# all_us_poi <- fread("C:/Users/dratnadiwakara2/Downloads/temp_dewey/all_us_poi.csv.gz")
+# 
+# poi_with_usps <- fread(paste0(data_path,"poi_with_usps_address.csv.gz"))
+# 
+# sod_with_usps <- fread(paste0(data_path,"sod_data_branches_with_usps_address.csv.gz"))
+# 
+# sod_raw <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2022.csv")
+```
+
+

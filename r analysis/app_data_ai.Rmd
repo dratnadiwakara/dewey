@@ -1,0 +1,52 @@
+---
+title: "Bank-level depositor characteristics and deposit beta"
+date: "07/21/2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    theme: united
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+div.main-container {
+  max-width: 100%;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+```
+
+
+```{r}
+rm(list=ls())
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(lfe)
+library(stargazer)
+library(rgdal)
+library(rgeos)
+
+data_path = 'C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/'
+```
+
+```{r}
+appdata <- readRDS("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/Dewey/data_ai_data.rds")
+
+names(appdata) <- c('App',	'App_Name',	'App_Icon_Url',	'App_Initial_Release_Date',	'App_Last_Version_Update',	'App_Status',	'Market',	'Market_Name',	'Developer_Account',	'Developer_Account_Name',	'Company',	'Company_Name',	'Company_HQ',	'Company_HQ_Country_Name',	'App_Category',	'App_Category_Name',	'Category',	'Category_Name'
+)
+
+appdata <- appdata[Category_Name=="Finance" & Company_HQ_Country_Name=="United States"]
+```
+
