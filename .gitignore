@@ -1,1 +1,4 @@
-global_variables.py
+py data clean/global_variables.py
+*.csv
+*.rds
+data

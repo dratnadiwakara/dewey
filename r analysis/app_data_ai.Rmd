@@ -48,5 +48,44 @@ names(appdata) <- c('App',	'App_Name',	'App_Icon_Url',	'App_Initial_Release_Date
 )
 
 appdata <- appdata[Category_Name=="Finance" & Company_HQ_Country_Name=="United States"]
+
+appdata_names <- appdata[,c("Company_Name")]
+```
+
+
+```{r}
+sod <- fread("C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Raw Data/SOD/data/ALL_2022.csv",select = c("NAMEFULL","NAMEHCR","CERT","RSSDID"))
+sod <- sod[!duplicated(sod)]
+```
+
+```{r}
+library(fuzzyjoin)
+
+result <- stringdist_left_join(appdata_names, sod, by = c("Company_Name" = "NAMEFULL"), method = "jaccard")%>%
+  mutate(similarity_score = 1 - stringdist::stringdistmatrix(Company_Name, NAMEFULL, method = "jaccard"))
+
+```
+
+```{r}
+result <- appdata_names[, cbind(Company_Name, find_closest_match(Company_Name, sod$NAMEFULL))]
+```
+
+
+```{r}
+# Load the required libraries
+library(data.table)
+library(fuzzyjoin)
+
+# Create sample data.tables
+name1 <- data.table(name1 = c("apple", "banana", "orange", "grape"))
+name2 <- data.table(name2 = c("apples", "banana", "oranges", "grapes", "kiwi"))
+
+# Perform a fuzzy join and calculate the similarity score
+result <- stringdist_left_join(name1, name2, by = c("name1" = "name2"), method = "jaccard")
+
+# Print the result
+print(result)
+
+
 ```
 

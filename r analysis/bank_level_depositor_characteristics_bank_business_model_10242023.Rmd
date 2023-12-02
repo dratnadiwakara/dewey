@@ -420,7 +420,7 @@ stargazer(r,type="text",no.space = T,omit.stat = "ser")
 
 ```{r}
 size_vector <- c('2. 1 to 10b') #[1] "1. Less than 1b"   "2. 1 to 10b"       "4. 50 to 250b"     "3. 10 to 50b"   "5. More than 250b"
-size_vector <- c('2. 1 to 10b','3. 10 to 50b','4. 50 to 250b','5. More than 250b')
+size_vector <- c('3. 10 to 50b','4. 50 to 250b','5. More than 250b')
 r <- list()
  r[[1]] <- felm(beta_z~median_age+log(mean_family_income)+college_or_higher_frac+over_65_frac+over_65_frac+owner_occ_frac+android_pct+white_fraction+self_employed_frac|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
 r[[2]] <- felm(beta_z~deposits_state_hhi+log(ASSET)|bank_size|0|bank_size,data=bank_wa_mean_data[bank_size %in% size_vector])
@@ -662,4 +662,44 @@ r[[7]] <- felm(as.formula(paste0("wa_maturiy_assets~",x_var,"+log(assets_total)|
 r[[8]] <- felm(as.formula(paste0("tier_1_ratio~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector  & tier_1_ratio>2 & tier_1_ratio<40])
  
  stargazer(r,type="text",no.space = T,omit.stat = "ser",dep.var.labels.include = F)
+```
+
+
+
+```{r}
+size_vector <- c('1. Less than 1b','2. 1 to 10b','3. 10 to 50b','4. 50 to 250b','5. More than 250b') #'1. Less than 1b',
+
+
+x_var <- "log(mean_family_income)+college_or_higher_frac+over_65_frac"
+
+r <- list()
+r[[1]] <- felm(as.formula(paste0("nim~",x_var,"+log(assets_total)|bank_size+data_period")),weights=call_summary[bank_size %in% size_vector]$asset_total,data=call_summary[bank_size %in% size_vector])
+r[[2]] <- felm(as.formula(paste0("roe~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[3]] <- felm(as.formula(paste0("efficiency_ratio~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[4]] <- felm(as.formula(paste0("yeild_on_loans~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[5]] <- felm(as.formula(paste0("uninsured_dep_frac~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[6]] <- felm(as.formula(paste0("deposits_assets~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[7]] <- felm(as.formula(paste0("wa_maturiy_assets~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector],weights=call_summary[bank_size %in% size_vector]$asset_total)
+r[[8]] <- felm(as.formula(paste0("tier_1_ratio~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector  & tier_1_ratio>2 & tier_1_ratio<40],weights=call_summary[bank_size %in% size_vector]$asset_total)
+ 
+   stargazer(r,type="text",no.space = T,omit.stat = "ser",dep.var.labels.include = F) # ,column.labels =      c("nim","roe","efficiency_ratio","yeild_on_loans","unins_frac","deposits_assets","maturity","tier_1")
+```
+
+```{r}
+size_vector <- c('1. Less than 1b') #'1. Less than 1b',
+
+
+x_var <- "log(mean_family_income)+college_or_higher_frac+over_65_frac"
+
+r <- list()
+r[[1]] <- felm(as.formula(paste0("nim~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[2]] <- felm(as.formula(paste0("roe~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[3]] <- felm(as.formula(paste0("efficiency_ratio~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[4]] <- felm(as.formula(paste0("yeild_on_loans~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[5]] <- felm(as.formula(paste0("uninsured_dep_frac~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[6]] <- felm(as.formula(paste0("deposits_assets~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[7]] <- felm(as.formula(paste0("wa_maturiy_assets~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector])
+r[[8]] <- felm(as.formula(paste0("tier_1_ratio~",x_var,"+log(assets_total)|bank_size+data_period")),data=call_summary[bank_size %in% size_vector  & tier_1_ratio>2 & tier_1_ratio<40])
+ 
+   stargazer(r,type="text",no.space = T,omit.stat = "ser",dep.var.labels.include = F) # ,column.labels =      c("nim","roe","efficiency_ratio","yeild_on_loans","unins_frac","deposits_assets","maturity","tier_1")
 ```

@@ -93,6 +93,12 @@ sod[,statefips:=str_pad(statefips,2,"left","0")]
 
 
 ```{r}
+matched_branch_count <- sod[match==1,.(no_branches=.N),by=RSSDID]
+write.csv(matched_branch_count,"C:/Users/dratnadiwakara2/Documents/OneDrive - Louisiana State University/Projects/Dewey/data/matched_branch_count.csv",row.names = FALSE)
+```
+
+
+```{r}
 sod[,.(count = .N,
        deposits=sum(DEPSUMBR),
        N_percent = (.N / nrow(sod)) * 100,
